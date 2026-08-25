@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>File Tree Graph</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+  :root{
+    --bg: #0a0b10;
+    --bg-soft: #101219;
+    --panel: #14161f;
+    --border: #24273a;
+    --text: #cdd0dc;
+    --text-dim: #7d8199;
+    --root: #f4fff2;
+    --link: #33364a;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: var(--bg);
+    font-family: -apple-system, "Segoe UI", Inter, sans-serif;
+    overflow: hidden;
+  }
+  #graph { width: 100vw; height: 100vh; display: block; cursor: grab; }
+  #graph:active { cursor: grabbing; }
+
+  .label {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    fill: var(--text-dim);
+    pointer-events: none;
+    user-select: none;
+  }
+  .label.dim { fill: #3b3e50; }
+  .label.hot { fill: #eef0f8; }
+
+  #panel {
+    position: fixed; top: 16px; left: 16px; width: 340px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 14px 12px;
+    z-index: 10;
+    box-shadow: 0 12px 30px rgba(0,0,0,.45);
+    transition: transform .25s ease, opacity .25s ease;
+  }
+  #panel.collapsed { transform: translateX(-368px); opacity: 0; pointer-events: none; }
+  #panel h1 {
+    font-size: 13px; letter-spacing: .04em; text-transform: uppercase;
+    color: var(--text); margin: 0 0 4px; font-weight: 600;
+  }
+  #panel p { font-size: 11.5px; color: var(--text-dim); margin: 0 0 10px; line-height: 1.5; }
+  #panel textarea {
+    width: 100%; height: 210px; resize: vertical;
+    background: var(--bg-soft); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11.5px; padding: 8px; line-height: 1.5;
+  }
+  #panel .row { display: flex; gap: 8px; margin-top: 10px; }
+  #panel select, #panel button {
+    font-family: inherit; font-size: 12px;
+    border-radius: 6px; border: 1px solid var(--border);
+    padding: 7px 10px; cursor: pointer;
+  }
+  #panel select { background: var(--bg-soft); color: var(--text); flex: 1; }
+  #panel button {
+    background: linear-gradient(180deg, #3a3e58, #2b2e42);
+    color: #f0f1f6; font-weight: 600; flex: 1;
+  }
+  #panel button:hover { background: linear-gradient(180deg, #454a68, #33364c); }
+  #panel .hint { margin-top: 8px; font-size: 10.5px; color: #565975; }
+
+  #toggle {
+    position: fixed; top: 16px; left: 16px; z-index: 11;
+    width: 34px; height: 34px; border-radius: 8px;
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--text-dim); display: none; align-items: center; justify-content: center;
+    cursor: pointer; font-size: 15px;
+  }
+  #toggle.show { display: flex; }
+
+  #stats {
+    position: fixed; bottom: 14px; left: 16px; z-index: 10;
+    font-family: ui-monospace, monospace; font-size: 11px;
+    color: var(--text-dim); letter-spacing: .02em;
+  }
+
+  #tip {
+    position: fixed; pointer-events: none; z-index: 20;
+    background: #191b26; border: 1px solid var(--border);
+    color: var(--text); font-size: 11.5px; padding: 6px 9px;
+    border-radius: 6px; display: none;
+    font-family: ui-monospace, monospace;
+    box-shadow: 0 6px 18px rgba(0,0,0,.4);
+    max-width: 320px; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+
+<div id="panel">
+  <h1>File tree &rarr; graph</h1>
+  <p>Paste your OneDrive structure below. Indented (tabs/spaces per level) or full paths, one per line. Add a real link to any item with <code>Name | https://...</code> &mdash; linked nodes get a white ring and open the folder on click.</p>
+  <textarea id="input" spellcheck="false"></textarea>
+  <div class="row">
+    <select id="mode">
+      <option value="auto">Auto-detect format</option>
+      <option value="paths">Full paths (one per line)</option>
+      <option value="indent">Indented tree</option>
+    </select>
+    <button id="render">Render graph</button>
+  </div>
+  <div class="hint">Drag nodes &middot; scroll to zoom &middot; hover to trace connections &middot; click a node to focus its branch</div>
+</div>
+<div id="toggle" title="Show input panel">&#9776;</div>
+<div id="stats"></div>
+<div id="tip"></div>
+
+<svg id="graph"></svg>
+
+<script>
+const SAMPLE = `MBV Documents
+  ALUMNI COHORTS | https://emory-my.sharepoint.com/shared?id=%2Fsites%2FMBVTest%2FShared%20Documents%2FALUMNI%20COHORTS&listurl=https%3A%2F%2Femory%2Esharepoint%2Ecom%2Fsites%2FMBVTest%2FShared%20Documents&viewid=f15d4287%2Dcf16%2D40a6%2D8f24%2Db9d8d2378a1e
+    1. Cohorts & Recruiting
+    2. Schedules & Curriculum
+    3. Events & Operations
+    4. Alumni & General Admin
+    Cohort I
+    Cohort II
+    Cohort III
+      Calendars - Cohort III
+      Class Weekends - Cohort III
+      Emory Veteran Events - Cohort III
+      Finances - Cohort III
+      On-boarding - Cohort III
+      Past Events Cohort III
+      Student Operations (AAR, etc,) - Cohort III
+    Finances
+    JFSC Presentation and Info Aug 2025
+    MBV Events and Panels
+  CURRENT COHORT
+  FUTURE COHORT - RECRUITMENT
+    Cohort IV
+  General
+    Automation
+      MBV LinkedIn Dev App.pptx
+    Birkman
+      Request memo for Birkman Certification c...
+    Catering
+      GBS Final Meeting & Event...
+      meal Vendors from Shenita.xlsx
+      Ocean Catering LUNCH MENUS 2026.pdf
+    Course Catalog - Handbook on-line
+      Academic Catalog Process Guide.pdf
+      Admissions and Application Requirements...
+      MBV Courses with descriptions.docx
+      Required Catalog Elements.pdf
+      Required Sections for Coursedog with que...
+    Current Important Folders Latest - Top Priority
+      GBS-MBV Letterheads and Logos (Shenita...
+    Directions Docs
+    Drafts
+      Surveys
+    Files from Shenita
+      Letterheads and logos
+    Keen Transition Files
+      ABC 2024 Keen Files
+      LRC Keen Transition Files
+      MBV Briefs and Keen Historical Files
+      Principled Leadership Cour...
+    KM for Compass, OPUD, Canvas, Emory Express
+      Commonly Used Accounting Codes.pdf
+      Emory University GA Sales Tax Letter.pdf
+      MBV Knowledge Management Outline fro...
+      Picture of MBV Speedtypes.png
+    MBV 2026 Accredidation Inputs
+      2023-25 Assessment Report Template for...
+      2025-27 MBV Assessment Report.docx
+      8.2.c Student Outcomes- Academic and St...
+    MBV Advisory Board
+      Bio_Resume_CV
+      Headshot poto
+      Advisory Board Bio and Headshot_1 docu...
+    Memos and other templates
+      Memo template.docx
+    Receipts
+    Staff Onboarding
+      Assistant Director Onboarding Training.xlsx
+      New Employee Onboarding Handout.pdf
+    Staff Pictures and Information
+      CJT brief bio as of 1 JUN 2026.docx
+      Colin J Thompson long bio as of 1 JUN 20...
+      Colin Thompson 1,500 character bio 10 JU...
+      Matt Smith Headshot.docx
+      Matt Smith Pro Bio 20250208.pdf
+      MBV PO Intro slide - CJT.pptx
+    Templates, Graphics and Signs
+      _MACOSX
+      Content
+      Directions
+      Gozueta Business School
+      Slide Templates
+      Army 25 1st Birthday graphic.webp
+      Army Birthday Graphic - 20260609.png
+      Avery745417clipStyleNameBadges.doc
+      EVEN_logo.png
+      Flag Day 2026.webp
+      MBV Business Card Image 11.14.23 v2.pptx
+      MBV Coin Logo 2020.png
+      New MBV Logo (df) - Black.png
+      New MBV Logo (df) - Navy.png
+      New MBV Logo (df) - White.png
+    UNIDENTIFIED DOCUMENTS
+      19150125-7103820-EMORY UNIVERSITY.pdf
+      KBA for VR&E 2025.docx
+      Loop paragraph.loop
+    USC Shared Documents
+    2026 MBV Info Session slides.pdf`;
+
+document.getElementById('input').value = SAMPLE;
+
+const palette = ['#5ec8ff','#ff6ec7','#b98bff','#66e0c4','#a6ff5e','#ffd45e','#ff9a5e','#ff5e6a','#7d9bff','#5effc2'];
+
+function hashColor(key, usedMap){
+  if(usedMap.has(key)) return usedMap.get(key);
+  const c = palette[usedMap.size % palette.length];
+  usedMap.set(key, c);
+  return c;
+}
+
+function splitUrl(raw){
+  // Split "Some Name | https://..." into { text, url }. URL is optional.
+  const idx = raw.indexOf(' | ');
+  if(idx === -1) return { text: raw, url: null };
+  const text = raw.slice(0, idx).trim();
+  const url = raw.slice(idx + 3).trim();
+  return { text, url: url || null };
+}
+
+function parseIndented(text){
+  const lines = text.split('\n').filter(l => l.trim().length);
+  const stack = []; // {depth, path}
+  const nodes = new Map();
+  const links = [];
+  let rootId = null;
+
+  lines.forEach(raw => {
+    const stripped = raw.replace(/\t/g, '    ');
+    const indent = stripped.match(/^ */)[0].length;
+    const { text: name, url } = splitUrl(stripped.trim());
+    if(!name) return;
+    while(stack.length && stack[stack.length-1].indent >= indent) stack.pop();
+    const parent = stack.length ? stack[stack.length-1] : null;
+    const path = parent ? parent.path + '/' + name : name;
+    const id = path;
+    if(!nodes.has(id)){
+      nodes.set(id, { id, name, path, children: 0, top: null, url });
+    }
+    if(parent){
+      links.push({ source: parent.path, target: id });
+      nodes.get(parent.path).children++;
+    } else {
+      rootId = id;
+    }
+    stack.push({ indent, path });
+  });
+  return finalize(nodes, links, rootId);
+}
+
+function parsePaths(text){
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  const nodes = new Map();
+  const links = [];
+  let rootId = '__root__';
+  nodes.set(rootId, { id: rootId, name: 'Root', path: rootId, children: 0, top: null, url: null });
+
+  lines.forEach(line => {
+    const { text: pathOnly, url: leafUrl } = splitUrl(line);
+    const parts = pathOnly.split('/').filter(Boolean);
+    let parentId = rootId;
+    let acc = '';
+    parts.forEach((part, i) => {
+      acc = acc ? acc + '/' + part : part;
+      const id = acc;
+      const isLeaf = i === parts.length - 1;
+      if(!nodes.has(id)){
+        nodes.set(id, { id, name: part, path: id, children: 0, top: null, url: isLeaf ? leafUrl : null });
+        links.push({ source: parentId, target: id });
+        nodes.get(parentId).children++;
+      } else if(isLeaf && leafUrl){
+        nodes.get(id).url = leafUrl;
+      }
+      parentId = id;
+    });
+  });
+  return finalize(nodes, links, rootId);
+}
+
+function finalize(nodes, links, rootId){
+  // assign top-level ancestor for coloring
+  const byId = nodes;
+  function topOf(id){
+    let cur = id;
+    let guard = 0;
+    const parentOf = new Map();
+    links.forEach(l => parentOf.set(l.target, l.source));
+    while(parentOf.has(cur) && parentOf.get(cur) !== rootId && guard < 200){
+      cur = parentOf.get(cur);
+      guard++;
+    }
+    return cur;
+  }
+  byId.forEach((n, id) => { n.top = id === rootId ? rootId : topOf(id); });
+
+  // descendant counts (for sizing)
+  const childCount = new Map();
+  links.forEach(l => childCount.set(l.source, (childCount.get(l.source)||0)+1));
+  byId.forEach(n => n.children = childCount.get(n.id) || 0);
+
+  return {
+    nodes: Array.from(byId.values()),
+    links,
+    rootId
+  };
+}
+
+let simulation, svgSel, gSel, linkSel, nodeSel, labelSel;
+
+function render(){
+  const raw = document.getElementById('input').value;
+  const mode = document.getElementById('mode').value;
+  let useMode = mode;
+  if(mode === 'auto'){
+    const firstLines = raw.split('\n').filter(l=>l.trim()).slice(0,8);
+    const pathLike = firstLines.filter(l => l.includes('/')).length >= firstLines.length * 0.6;
+    useMode = pathLike ? 'paths' : 'indent';
+  }
+  const data = useMode === 'paths' ? parsePaths(raw) : parseIndented(raw);
+  draw(data);
+  document.getElementById('panel').classList.add('collapsed');
+  document.getElementById('toggle').classList.add('show');
+}
+
+function draw(data){
+  const { nodes, links, rootId } = data;
+  const usedColors = new Map();
+  const W = window.innerWidth, H = window.innerHeight;
+
+  const svg = d3.select('#graph');
+  svg.selectAll('*').remove();
+  svg.attr('width', W).attr('height', H);
+
+  const defs = svg.append('defs');
+  const glow = defs.append('filter').attr('id','glow').attr('x','-150%').attr('y','-150%').attr('width','400%').attr('height','400%');
+  glow.append('feGaussianBlur').attr('stdDeviation', 4.2).attr('result','blur');
+  const merge = glow.append('feMerge');
+  merge.append('feMergeNode').attr('in','blur');
+  merge.append('feMergeNode').attr('in','SourceGraphic');
+
+  const g = svg.append('g');
+  gSel = g;
+
+  svg.call(d3.zoom().scaleExtent([0.15, 6]).on('zoom', (ev) => {
+    g.attr('transform', ev.transform);
+  }));
+
+  // Assign color per top-level group, pre-position clusters in a ring
+  const topIds = Array.from(new Set(nodes.filter(n=>n.id!==rootId).map(n=>n.top))).filter(t=>t!==rootId);
+  const angleStep = (2*Math.PI) / Math.max(topIds.length,1);
+  const clusterPos = new Map();
+  topIds.forEach((t,i) => {
+    const angle = i*angleStep;
+    clusterPos.set(t, { x: W/2 + Math.cos(angle)*Math.min(W,H)*0.30, y: H/2 + Math.sin(angle)*Math.min(W,H)*0.30 });
+    hashColor(t, usedColors);
+  });
+
+  nodes.forEach(n => {
+    n.color = n.id === rootId ? '#eafff2' : hashColor(n.top, usedColors);
+    n.isRoot = n.id === rootId;
+    const isBranch = n.children > 0;
+    n.r = n.isRoot ? 15 : (isBranch ? Math.min(6 + n.children*0.9, 16) : 3.4);
+    const cp = clusterPos.get(n.top);
+    if(cp){ n.x = cp.x + (Math.random()-0.5)*40; n.y = cp.y + (Math.random()-0.5)*40; }
+    else { n.x = W/2; n.y = H/2; }
+  });
+
+  const linkForce = d3.forceLink(links).id(d=>d.id).distance(d => {
+    const s = typeof d.source === 'object' ? d.source : nodes.find(n=>n.id===d.source);
+    return s && s.isRoot ? 140 : 34;
+  }).strength(0.9);
+
+  simulation = d3.forceSimulation(nodes)
+    .force('link', linkForce)
+    .force('charge', d3.forceManyBody().strength(d => d.isRoot ? -900 : (d.children>0 ? -180 : -55)))
+    .force('collide', d3.forceCollide().radius(d => d.r + 10).strength(0.85))
+    .force('cluster', clusterForce())
+    .force('center', d3.forceCenter(W/2, H/2).strength(0.02))
+    .on('tick', ticked);
+
+  function clusterForce(){
+    return function(alpha){
+      nodes.forEach(n => {
+        if(n.isRoot) return;
+        const cp = clusterPos.get(n.top);
+        if(!cp) return;
+        n.vx += (cp.x - n.x) * 0.010 * alpha * 3;
+        n.vy += (cp.y - n.y) * 0.010 * alpha * 3;
+      });
+    };
+  }
+
+  linkSel = g.append('g').attr('stroke', 'var(--link)').attr('stroke-opacity', 0.55)
+    .selectAll('line').data(links).join('line').attr('stroke-width', 1);
+
+  const nodeG = g.append('g').selectAll('g').data(nodes).join('g')
+    .style('cursor','pointer')
+    .call(drag(simulation));
+
+  nodeSel = nodeG.append('circle')
+    .attr('r', d => d.r)
+    .attr('fill', d => d.color)
+    .attr('filter', d => d.isRoot || d.children>0 ? 'url(#glow)' : null)
+    .attr('opacity', d => d.isRoot ? 1 : (d.children>0 ? 0.95 : 0.8))
+    .attr('stroke', d => d.url ? '#ffffff' : 'none')
+    .attr('stroke-width', d => d.url ? 1.3 : 0)
+    .attr('stroke-opacity', 0.7);
+
+  nodeG.style('cursor', d => d.url ? 'pointer' : 'grab');
+
+  labelSel = nodeG.append('text')
+    .attr('class','label')
+    .attr('x', d => d.r + 5)
+    .attr('y', 3)
+    .attr('font-size', d => d.isRoot ? 12 : (d.children>0 ? 10.5 : 9))
+    .text(d => d.name);
+
+  const tip = document.getElementById('tip');
+  const neighborMap = new Map();
+  links.forEach(l => {
+    const s = typeof l.source==='object'? l.source.id : l.source;
+    const t = typeof l.target==='object'? l.target.id : l.target;
+    if(!neighborMap.has(s)) neighborMap.set(s,new Set());
+    if(!neighborMap.has(t)) neighborMap.set(t,new Set());
+    neighborMap.get(s).add(t);
+    neighborMap.get(t).add(s);
+  });
+
+  nodeG.on('mouseenter', (ev,d) => {
+    const nb = neighborMap.get(d.id) || new Set();
+    labelSel.classed('dim', n => n.id!==d.id && !nb.has(n.id));
+    labelSel.classed('hot', n => n.id===d.id);
+    nodeSel.attr('opacity', n => n.id===d.id || nb.has(n.id) ? 1 : 0.15);
+    linkSel.attr('stroke-opacity', l => (l.source.id===d.id || l.target.id===d.id) ? 0.9 : 0.06);
+    tip.style.display='block';
+    const base = d.path.replace(/^__root__\//,'') || d.name;
+    tip.textContent = d.url ? base + '  ↗ click to open' : base;
+  }).on('mousemove',(ev)=>{
+    tip.style.left = (ev.clientX+14)+'px'; tip.style.top=(ev.clientY+12)+'px';
+  }).on('mouseleave', () => {
+    labelSel.classed('dim', false).classed('hot', false);
+    nodeSel.attr('opacity', d => d.isRoot ? 1 : (d.children>0 ? 0.95 : 0.8));
+    linkSel.attr('stroke-opacity', 0.55);
+    tip.style.display='none';
+  });
+
+  function ticked(){
+    linkSel
+      .attr('x1', d=>d.source.x).attr('y1', d=>d.source.y)
+      .attr('x2', d=>d.target.x).attr('y2', d=>d.target.y);
+    nodeG.attr('transform', d => `translate(${d.x},${d.y})`);
+  }
+
+  document.getElementById('stats').textContent =
+    `${nodes.length} items · ${links.length} connections · ${topIds.length} top-level folders`;
+}
+
+function drag(sim){
+  let startX = 0, startY = 0, moved = 0;
+  function started(ev,d){
+    if(!ev.active) sim.alphaTarget(0.25).restart();
+    d.fx=d.x; d.fy=d.y;
+    startX = ev.x; startY = ev.y; moved = 0;
+  }
+  function dragged(ev,d){
+    d.fx=ev.x; d.fy=ev.y;
+    moved = Math.max(moved, Math.hypot(ev.x-startX, ev.y-startY));
+  }
+  function ended(ev,d){
+    if(!ev.active) sim.alphaTarget(0);
+    d.fx=null; d.fy=null;
+    if(moved < 4 && d.url){ window.open(d.url, '_blank', 'noopener'); }
+  }
+  return d3.drag().on('start',started).on('drag',dragged).on('end',ended);
+}
+
+document.getElementById('render').addEventListener('click', render);
+document.getElementById('toggle').addEventListener('click', () => {
+  document.getElementById('panel').classList.remove('collapsed');
+  document.getElementById('toggle').classList.remove('show');
+});
+window.addEventListener('resize', () => {
+  const svg = document.getElementById('graph');
+  svg.setAttribute('width', window.innerWidth);
+  svg.setAttribute('height', window.innerHeight);
+  if(simulation){
+    simulation.force('center', d3.forceCenter(window.innerWidth/2, window.innerHeight/2).strength(0.02));
+    simulation.alpha(0.3).restart();
+  }
+});
+
+render();
+</script>
+</body>
+</html>
